@@ -328,32 +328,39 @@ class CollectorEngine:
                 zip_file_path = dest_dir / f"XML_Fiscal_{primeiro_cnpj}_{self.target_year}_{self.target_month}_{counter}.zip"
                 counter += 1
 
+            # Generate Excel report in a temporary directory
+            from pathlib import Path
+            from src.excel_report import generate_excel_report
+            template_path = Path("/home/fausto/.gemini/antigravity/brain/51dab5b9-ab61-4fd8-9b02-b40f2ee94e9b/.user_uploaded/media_1794930942001_09dcfacd.xlsx")
+            excel_output_dir = dest_dir / "temp_excel"
+            excel_output_dir.mkdir(parents=True, exist_ok=True)
+            generate_excel_report(matched_notes, template_path, excel_output_dir)
+            excel_file = excel_output_dir / "Relatorio.xlsx"
+
             self._log(f"Gerando pacote ZIP com {len(matched_notes)} notas e {len(inut_records_found)} inutilizações...")
             with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
                 # 1. Relatório em texto exclusivo dentro do ZIP
                 zipf.writestr("relatorio_coleta.txt", txt_report_content.encode("utf-8"))
 
-                # 2. XMLs de notas fiscais (organizados no mês de autorização)
+                # 2. XMLs de notas fiscais (todos diretamente na pasta Arquivos)
                 for note in matched_notes:
                     if self.is_cancelled():
                         break
                     src_file = note["path"]
-                    cnpj_folder = note["emit_cnpj"] or "Sem_CNPJ"
-                    ano_mes = note.get("ano_mes_autorizacao") or f"{self.target_year}-{self.target_month}"
-                    mod_folder = f"Modelo_{note['modelo']}"
-                    inner_path = f"{cnpj_folder}/{ano_mes}/{mod_folder}/{src_file.name}"
+                    inner_path = f"Arquivos/{src_file.name}"
                     zipf.write(src_file, arcname=inner_path)
 
-                # 3. XMLs de Inutilizações localizadas anexadas junto no ZIP
+                # 3. XMLs de Inutilizações (também na pasta Arquivos)
                 for inut in inut_records_found:
                     if self.is_cancelled():
                         break
                     src_file = inut["path"]
-                    cnpj_folder = inut["emit_cnpj"] or "Sem_CNPJ"
-                    ano_mes = f"{self.target_year}-{self.target_month}"
-                    mod_folder = f"Modelo_{inut['modelo']}"
-                    inner_path = f"{cnpj_folder}/{ano_mes}/{mod_folder}/Inutilizadas/{src_file.name}"
+                    inner_path = f"Arquivos/{src_file.name}"
                     zipf.write(src_file, arcname=inner_path)
+
+                # 4. Relatório Excel na subpasta Arquivos/Relatório
+                if excel_file.exists():
+                    zipf.write(excel_file, arcname="Arquivos/Relatório/Relatorio.xlsx")
 
             self._log("Pacote ZIP gerado com sucesso!")
 

@@ -1,58 +1,78 @@
-# Coletor & Auditor de XML Fiscal (NF-e / NFC-e) - Alta Performance
+# Coletor XML Fiscal
 
-Aplicativo executável desktop para coleta inteligente, validação e auditoria fiscal de arquivos XML de **NF-e (Modelo 55)** e **NFC-e (Modelo 65)**.
+Este repositório contém o **Coletor XML Fiscal**, um utilitário Python que:
 
----
+- Varre diretórios em busca de arquivos XML de notas fiscais (NF‑e 55 e NFC‑e 65).
+- Filtra por CNPJ, data de autorização da SEFAZ e modelo.
+- Audita quebras de sequência numérica e inclui informações de inutilizações.
+- Gera um relatório de texto e um relatório Excel (baseado no modelo fornecido).
+- Empacota tudo em um único arquivo **ZIP** contendo:
+  - Pasta `Arquivos/` com todos os XMLs coletados.
+  - Subpasta `Arquivos/Relatório/` com o Excel.
+  - Relatório de texto (`relatorio_coleta.txt`).
+- Possui um script `build_exe.py` que usa **PyInstaller** para gerar o executável `ColetorXMLFiscal.exe`.
 
-## ⚡ Por que é ultrarrápido?
+## Estrutura de pastas
 
-Ao varrer pastas locais ou na **Intranet / Rede compartilhada**, o aplicativo não precisa abrir nem ler milhares de arquivos XML na rede:
-- O sistema decodifica instantaneamente a **Chave de Acesso SEFAZ de 44 dígitos** presente no próprio nome do arquivo:
-  - `[AAMM]` (Ano e Mês de Emissão)
-  - `[CNPJ]` (CNPJ do Emitente)
-  - `[Modelo]` (55 para NF-e, 65 para NFC-e)
-  - `[Série]` e `[Número]` da nota
-- Arquivos de outros meses distantes, outros CNPJs ou outros modelos são **descartados instantaneamente em microssegundos (Zero-IO na rede)**.
-- Somente as notas que atendem aos filtros são lidas e empacotadas no ZIP.
+```
+Coletor XML pastas FiscaMan/
+├── src/                     # código fonte
+│   ├── collector.py         # engine de coleta
+│   ├── xml_parser.py        # parsing de XMLs
+│   ├── exporter.py          # geração de relatório txt
+│   ├── excel_report.py      # geração do Excel a partir do template
+│   └── ...
+├── tests/                   # testes unitários
+├── build_exe.py             # script de compilação com PyInstaller
+├── requirements.txt         # dependências
+├── README.md                # este arquivo
+├── LICENSE                  # licença MIT
+└── .gitignore               # arquivos a serem ignorados
+```
 
----
+## Como usar
 
-## 🚀 Principais Recursos
+### 1. Preparar o ambiente
 
-1. **Enquadramento pelo Mês de Autorização SEFAZ (`<dhRecbto>`)**:
-   - O aplicativo considera a data real em que a nota foi homologada e autorizada na SEFAZ.
-   - **Varredura inteligente de borda**: Para manter a eficiência máxima, o sistema avalia os arquivos de virada de mês (dia 01 do mês seguinte e último dia do mês anterior). Assim, notas emitidas por exemplo em `01/11` às `00:30`, mas autorizadas pela SEFAZ em `31/10` às `23:30`, são **automaticamente identificadas e incluídas no mês de outubro**.
-   - Ambas as datas (**Emissão** e **Autorização**) são detalhadas na tabela visual e no relatório em texto.
+```bash
+# Clone o repositório (quando estiver no GitHub)
+# git clone <url>
+cd "Coletor XML pastas FiscaMan"
 
-2. **Interface Limpa e Direta**:
-   - A listagem de pastas fica acessível através do botão **`⚙ Configurar Pastas de Busca`** no topo. Uma vez configuradas, as pastas permanecem salvas em `config.json`.
-   - A tela principal foca diretamente na operação: **Mês/Ano**, **CNPJ**, **Modelos**, **Pasta Destino** e **Iniciar Coleta**.
+# Crie e ative um virtualenv
+python3 -m venv .venv
+source .venv/bin/activate
 
-3. **Varredura Local & Intranet (Rede UNC)**:
-   - Suporte a pastas locais e caminhos de rede UNC da intranet (Ex: `\\192.168.1.50\Pastas\XML` ou `\\ServidorPDV\Notas`).
-   - Busca recursiva em todas as subpastas.
+# Instale as dependências
+pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-4. **Auditoria com Busca Inteligente de Inutilizações (`ProcInutNFe`)**:
-   - Agrupa as notas por `CNPJ Emitente + Modelo + Série`.
-   - Detecta automaticamente qualquer salto na numeração (`<nNF>`).
-   - **Se detectar quebra**: faz uma busca direcionada por arquivos de Inutilização que contenham o número faltante (ex: `Inut011-000017156-000017156-Proc.xml`).
-   - Anexa o XML da Inutilização ao pacote ZIP e comprova a regularidade na SEFAZ.
+### 2. Executar a coleta
 
-5. **Pacote ZIP com Relatório Exclusivo**:
-   - Organiza os XMLs em subpastas por `{CNPJ_Emitente}/{Ano-Mês-Autorizacao}/Modelo_{Mod}/`.
-   - XMLs de inutilização são arquivados na pasta `Inutilizadas/`.
-   - Gera o arquivo **`relatorio_coleta.txt`** exclusivamente dentro do `.zip`, contendo cabeçalho com totais, listagem de notas com datas de emissão e autorização, tabela de inutilizações e auditoria completa da sequência.
+O programa principal está em `main.py`. Ele abre a interface gráfica (CustomTkinter). Você pode rodar:
 
----
+```bash
+python main.py
+```
 
-## 💻 Como Usar o Executável
+### 3. Gerar o executável (opcional)
 
-1. Abra o arquivo **`dist/ColetorXMLFiscal.exe`**.
-2. No botão **`⚙ Configurar Pastas de Busca`** (no canto superior direito):
-   - Adicione suas pastas locais ou caminhos de intranet (salvo automaticamente).
-3. Na tela principal:
-   - Escolha o **Mês** e o **Ano** desejados.
-   - Digite o(s) CNPJ(s) (opcional).
-   - Marque os modelos (`NF-e` e/ou `NFC-e`).
-   - Selecione a **Pasta Destino**.
-4. Clique em **▶ Iniciar Coleta e Auditoria**.
+```bash
+python build_exe.py   # o .exe será colocado em ./dist/
+```
+
+### 4. Resultados
+
+Após a execução, o ZIP será criado no diretório de destino configurado na interface. O ZIP conterá a estrutura descrita acima.
+
+## Contribuição
+
+1. Fork o repositório.
+2. Crie uma branch para sua feature (`git checkout -b feature/XYZ`).
+3. Commit suas mudanças (`git commit -m "Add XYZ"`).
+4. Abra um Pull Request.
+
+## Licença
+
+Este projeto está licenciado sob a licença MIT – veja o arquivo `LICENSE` para detalhes.

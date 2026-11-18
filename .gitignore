@@ -1,48 +1,32 @@
-# Ambientes Virtuais
-venv/
-.venv/
-env/
-ENV/
-
-# Python Cache & Bytecode
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# PyInstaller & Compilação
-dist/
-build/
-*.manifest
-*.spec
-
-# Arquivos de Dados e Testes Locais
-*.xml
-*.zip
-0 Arquivos/
-test_sandbox/
-config.json
-
-# Variáveis de Ambiente & Credenciais
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-*.p12
-*.pfx
-*credentials*.json
-*service-account*.json
-
-# Logs & Bancos Locais
+*.pyc
+*.pyo
+*.pyd
+*.orig
 *.log
-*.sqlite
-*.sqlite3
-*.db
-
-# IDEs & Sistema Operacional
+.env
+.venv/
+build/
+Dist/
+Dist/
+*.egg-info/
+*.spec
+# Exclude executables generally, but keep the built executable for releases
+*.exe
+# Keep the distribution executable for release
+!dist/ColetorXMLFiscal.exe
+*.dll
+*.so
+*.dylib
+*.zip
+*.tar.gz
+*.egg
+*.dist-info/
+*.pyc
+# IDE/editor files
 .vscode/
 .idea/
+*.iml
+# OS files
 .DS_Store
 Thumbs.db
-Desktop.ini
