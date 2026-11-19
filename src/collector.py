@@ -1,6 +1,9 @@
 import os
+import sys
+import time
 import shutil
 import zipfile
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -16,6 +19,12 @@ from src.xml_parser import (
 )
 from src.sequence import analyze_sequences
 from src.exporter import generate_txt_report
+
+def _get_template_path() -> Path:
+    """Resolve o caminho do template Excel tanto em dev quanto no executável PyInstaller."""
+    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base_dir / "resources" / "template_relatorio.xlsx"
+
 
 def get_adjacent_month_bounds(year_int: int, month_int: int):
     """Calcula códigos AAMM e YYYY-MM para mês anterior e mês posterior."""
@@ -102,7 +111,62 @@ class CollectorEngine:
         if self.on_progress:
             self.on_progress(scanned, matched, cur_file)
 
+    def _check_path_accessible(self, src: str, timeout: float = 10.0) -> bool:
+        """Verifica se o diretório existe/está acessível sem travar indefinidamente em caminhos de rede."""
+        result = {"exists": False, "done": False, "error": None}
+
+        def probe():
+            try:
+                result["exists"] = os.path.isdir(src)
+            except Exception as exc:
+                result["error"] = exc
+            finally:
+                result["done"] = True
+
+        t = threading.Thread(target=probe, daemon=True)
+        t.start()
+
+        deadline = time.monotonic() + timeout
+        while not result["done"]:
+            if self.is_cancelled():
+                return False
+            if time.monotonic() >= deadline:
+                self._log(f"Aviso: Tempo esgotado ({int(timeout)}s) ao acessar diretório (rede lenta ou inacessível?): {src}")
+                return False
+            time.sleep(0.2)
+
+        if result["error"] is not None:
+            self._log(f"Aviso: Erro ao acessar diretório {src}: {result['error']}")
+            return False
+
+        if not result["exists"]:
+            self._log(f"Aviso: Diretório não encontrado ou inacessível: {src}")
+            return False
+
+        return True
+
     def _run(self):
+        try:
+            self._run_internal()
+        except Exception as e:
+            self._log(f"ERRO inesperado durante o processamento: {e}")
+            if self.on_finished:
+                self.on_finished({
+                    "cancelled": False,
+                    "error": str(e),
+                    "total_scanned": 0,
+                    "total_matched": 0,
+                    "total_inut": 0,
+                    "notes": [],
+                    "inut_records": [],
+                    "audit": [],
+                    "has_sequence_break": False,
+                    "quebras_count": 0,
+                    "inut_count": 0,
+                    "zip_path": None,
+                })
+
+    def _run_internal(self):
         self._log(
             f"Iniciando busca inteligente para o mês {self.target_month}/{self.target_year} "
             f"(com validação de autorização <dhRecbto> na virada de mês)..."
@@ -119,11 +183,11 @@ class CollectorEngine:
         for src in self.source_paths:
             if self.is_cancelled():
                 break
-            src_path = Path(src)
-            if not src_path.exists():
-                self._log(f"Aviso: Diretório não acessível: {src}")
+            self._log(f"Verificando diretório: {src}")
+            if not self._check_path_accessible(src):
                 continue
 
+            src_path = Path(src)
             self._log(f"Varrendo diretório: {src}")
             try:
                 for root, _, files in os.walk(src_path):
@@ -137,7 +201,7 @@ class CollectorEngine:
                             continue
 
                         scanned_count += 1
-                        if scanned_count % 100 == 0:
+                        if scanned_count == 1 or scanned_count % 50 == 0:
                             self._report_progress(scanned_count, len(target_candidates), fname)
 
                         key_44 = extract_key_from_filename(fname)
@@ -329,38 +393,38 @@ class CollectorEngine:
                 counter += 1
 
             # Generate Excel report in a temporary directory
-            from pathlib import Path
             from src.excel_report import generate_excel_report
-            template_path = Path("/home/fausto/.gemini/antigravity/brain/51dab5b9-ab61-4fd8-9b02-b40f2ee94e9b/.user_uploaded/media_1794930942001_09dcfacd.xlsx")
-            excel_output_dir = dest_dir / "temp_excel"
-            excel_output_dir.mkdir(parents=True, exist_ok=True)
-            generate_excel_report(matched_notes, template_path, excel_output_dir)
-            excel_file = excel_output_dir / "Relatorio.xlsx"
+            template_path = _get_template_path()
 
             self._log(f"Gerando pacote ZIP com {len(matched_notes)} notas e {len(inut_records_found)} inutilizações...")
-            with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-                # 1. Relatório em texto exclusivo dentro do ZIP
-                zipf.writestr("relatorio_coleta.txt", txt_report_content.encode("utf-8"))
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                excel_output_dir = Path(tmp_dir)
+                generate_excel_report(matched_notes, template_path, excel_output_dir)
+                excel_file = excel_output_dir / "Relatorio.xlsx"
 
-                # 2. XMLs de notas fiscais (todos diretamente na pasta Arquivos)
-                for note in matched_notes:
-                    if self.is_cancelled():
-                        break
-                    src_file = note["path"]
-                    inner_path = f"Arquivos/{src_file.name}"
-                    zipf.write(src_file, arcname=inner_path)
+                with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+                    # 1. Relatório em texto exclusivo dentro do ZIP
+                    zipf.writestr("relatorio_coleta.txt", txt_report_content.encode("utf-8"))
 
-                # 3. XMLs de Inutilizações (também na pasta Arquivos)
-                for inut in inut_records_found:
-                    if self.is_cancelled():
-                        break
-                    src_file = inut["path"]
-                    inner_path = f"Arquivos/{src_file.name}"
-                    zipf.write(src_file, arcname=inner_path)
+                    # 2. XMLs de notas fiscais (todos diretamente na pasta Arquivos)
+                    for note in matched_notes:
+                        if self.is_cancelled():
+                            break
+                        src_file = note["path"]
+                        inner_path = f"Arquivos/{src_file.name}"
+                        zipf.write(src_file, arcname=inner_path)
 
-                # 4. Relatório Excel na subpasta Arquivos/Relatório
-                if excel_file.exists():
-                    zipf.write(excel_file, arcname="Arquivos/Relatório/Relatorio.xlsx")
+                    # 3. XMLs de Inutilizações (também na pasta Arquivos)
+                    for inut in inut_records_found:
+                        if self.is_cancelled():
+                            break
+                        src_file = inut["path"]
+                        inner_path = f"Arquivos/{src_file.name}"
+                        zipf.write(src_file, arcname=inner_path)
+
+                    # 4. Relatório Excel na subpasta Arquivos/Relatório
+                    if excel_file.exists():
+                        zipf.write(excel_file, arcname="Arquivos/Relatório/Relatorio.xlsx")
 
             self._log("Pacote ZIP gerado com sucesso!")
 

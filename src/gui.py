@@ -503,6 +503,18 @@ class App(ctk.CTk):
             self.banner_label.pack(fill="x")
             return
 
+        if result.get("error"):
+            err_msg = result["error"]
+            self.lbl_stats.configure(text="Erro durante o processamento.")
+            self.banner_label.configure(
+                text=f"  ✖ ERRO: {err_msg}  ",
+                fg_color="#c0392b",
+                text_color="#ffffff"
+            )
+            self.banner_label.pack(fill="x")
+            messagebox.showerror("Erro no Processamento", f"Ocorreu um erro durante a coleta:\n\n{err_msg}")
+            return
+
         total_scanned = result.get("total_scanned", 0)
         total_matched = result.get("total_matched", 0)
         total_inut = result.get("total_inut", 0)

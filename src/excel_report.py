@@ -31,12 +31,17 @@ def generate_excel_report(
         Column title for the authorization datetime. Defaults to the Portuguese
         label requested by the user.
     """
-    # Load template workbook (preserve styles, formulas, etc.)
-    wb: Workbook = load_workbook(filename=str(template_path))
-    ws = wb.active  # Assume the first sheet is the target
+    # Load template workbook if it exists, otherwise create a fresh workbook.
+    if template_path and template_path.exists():
+        wb: Workbook = load_workbook(filename=str(template_path))
+        ws = wb.active
+    else:
+        wb = Workbook()
+        ws = wb.active
 
     # Determine existing headers (first row). We'll append missing columns if needed.
-    existing_headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    first_row = next(ws.iter_rows(min_row=1, max_row=1), None)
+    existing_headers = [cell.value for cell in first_row if cell.value is not None] if first_row else []
 
     # Desired columns (based on current txt report) – we will ensure they exist.
     desired_columns = [
