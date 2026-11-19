@@ -17,9 +17,7 @@ def build():
         "--name=ColetorXMLFiscal",
         "--collect-all=customtkinter",
         "--hidden-import=xml.etree.ElementTree",
-        "--hidden-import=openpyxl",
         "--hidden-import=src",
-        f"--add-data=resources/template_relatorio.xlsx{os.pathsep}resources",
         "main.py"
     ]
     

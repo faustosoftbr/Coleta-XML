@@ -1,9 +1,7 @@
 import os
-import sys
 import time
 import shutil
 import zipfile
-import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -19,12 +17,6 @@ from src.xml_parser import (
 )
 from src.sequence import analyze_sequences
 from src.exporter import generate_txt_report
-
-def _get_template_path() -> Path:
-    """Resolve o caminho do template Excel tanto em dev quanto no executável PyInstaller."""
-    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
-    return base_dir / "resources" / "template_relatorio.xlsx"
-
 
 def get_adjacent_month_bounds(year_int: int, month_int: int):
     """Calcula códigos AAMM e YYYY-MM para mês anterior e mês posterior."""
@@ -392,39 +384,26 @@ class CollectorEngine:
                 zip_file_path = dest_dir / f"XML_Fiscal_{primeiro_cnpj}_{self.target_year}_{self.target_month}_{counter}.zip"
                 counter += 1
 
-            # Generate Excel report in a temporary directory
-            from src.excel_report import generate_excel_report
-            template_path = _get_template_path()
-
             self._log(f"Gerando pacote ZIP com {len(matched_notes)} notas e {len(inut_records_found)} inutilizações...")
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                excel_output_dir = Path(tmp_dir)
-                generate_excel_report(matched_notes, template_path, excel_output_dir)
-                excel_file = excel_output_dir / "Relatorio.xlsx"
+            with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+                # 1. Relatório em texto exclusivo dentro do ZIP
+                zipf.writestr("relatorio_coleta.txt", txt_report_content.encode("utf-8"))
 
-                with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-                    # 1. Relatório em texto exclusivo dentro do ZIP
-                    zipf.writestr("relatorio_coleta.txt", txt_report_content.encode("utf-8"))
+                # 2. XMLs de notas fiscais (todos diretamente na pasta Arquivos)
+                for note in matched_notes:
+                    if self.is_cancelled():
+                        break
+                    src_file = note["path"]
+                    inner_path = f"Arquivos/{src_file.name}"
+                    zipf.write(src_file, arcname=inner_path)
 
-                    # 2. XMLs de notas fiscais (todos diretamente na pasta Arquivos)
-                    for note in matched_notes:
-                        if self.is_cancelled():
-                            break
-                        src_file = note["path"]
-                        inner_path = f"Arquivos/{src_file.name}"
-                        zipf.write(src_file, arcname=inner_path)
-
-                    # 3. XMLs de Inutilizações (também na pasta Arquivos)
-                    for inut in inut_records_found:
-                        if self.is_cancelled():
-                            break
-                        src_file = inut["path"]
-                        inner_path = f"Arquivos/{src_file.name}"
-                        zipf.write(src_file, arcname=inner_path)
-
-                    # 4. Relatório Excel na subpasta Arquivos/Relatório
-                    if excel_file.exists():
-                        zipf.write(excel_file, arcname="Arquivos/Relatório/Relatorio.xlsx")
+                # 3. XMLs de Inutilizações (também na pasta Arquivos)
+                for inut in inut_records_found:
+                    if self.is_cancelled():
+                        break
+                    src_file = inut["path"]
+                    inner_path = f"Arquivos/{src_file.name}"
+                    zipf.write(src_file, arcname=inner_path)
 
             self._log("Pacote ZIP gerado com sucesso!")
 

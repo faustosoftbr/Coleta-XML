@@ -20,7 +20,6 @@ Coletor XML pastas FiscaMan/
 │   ├── collector.py         # engine de coleta
 │   ├── xml_parser.py        # parsing de XMLs
 │   ├── exporter.py          # geração de relatório txt
-│   ├── excel_report.py      # geração do Excel a partir do template
 │   └── ...
 ├── tests/                   # testes unitários
 ├── build_exe.py             # script de compilação com PyInstaller
