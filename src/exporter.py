@@ -14,7 +14,7 @@ def generate_txt_report(
     agora_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     total_notas = len(notes)
     total_inut = len(inut_records)
-    valor_total_soma = sum(n.get("valor_total", 0.0) for n in notes)
+    valor_total_soma = sum(n.get("valor_total", 0.0) for n in notes if n.get("status") != "CANCELADA")
     
     cnpjs_str = search_params.get("cnpjs_str", "Todos")
     periodo_str = search_params.get("data_ini", "Não informado")

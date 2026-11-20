@@ -180,14 +180,15 @@ def generate_excel_report(
         row_idx += 1
 
         total_docs += 1
-        soma_geral += v_total
-        soma_desonerado += v_deson
-        if status == "AUTORIZADA":
-            total_autorizados += 1
-            soma_autorizados += v_total
-        elif status == "CANCELADA":
+        if status == "CANCELADA":
             total_cancelados += 1
             soma_cancelados += v_total
+        else:
+            soma_geral += v_total
+            soma_desonerado += v_deson
+            if status == "AUTORIZADA":
+                total_autorizados += 1
+                soma_autorizados += v_total
 
         status_counter[status] += 1
         tipo_doc_counter[tipo_doc] += 1
