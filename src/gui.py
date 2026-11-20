@@ -523,6 +523,7 @@ class App(ctk.CTk):
         inut_records = result.get("inut_records", [])
         audit_list = result.get("audit", [])
         zip_path = result.get("zip_path")
+        excel_path = result.get("excel_path")
 
         self.lbl_stats.configure(
             text=f"Concluído! Verificados: {total_scanned} | Notas: {total_matched} | Inutilizações: {total_inut}"
@@ -615,6 +616,8 @@ class App(ctk.CTk):
 
         if zip_path:
             msg += f"\nPacote ZIP gerado em:\n{zip_path}"
+        if excel_path:
+            msg += f"\n\nRelatório Excel gerado em:\n{excel_path}"
 
         if has_break:
             messagebox.showwarning("Aviso de Quebra de Sequência", msg)

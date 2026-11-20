@@ -17,6 +17,7 @@ from src.xml_parser import (
 )
 from src.sequence import analyze_sequences
 from src.exporter import generate_txt_report
+from src.excel_report import generate_excel_report
 
 def get_adjacent_month_bounds(year_int: int, month_int: int):
     """Calcula códigos AAMM e YYYY-MM para mês anterior e mês posterior."""
@@ -169,6 +170,7 @@ class CollectorEngine:
         prev_boundary_candidates: List[Dict[str, Any]] = []
         non_key_files: List[Tuple[Path, str]] = []
         scanned_count = 0
+        duplicates_removed = 0
         vistas_chaves: Set[str] = set()
 
         # 1. Primeira Passagem: Varredura ultrarrápida por chave SEFAZ (Zero-IO)
@@ -216,6 +218,7 @@ class CollectorEngine:
                             continue
 
                         if key_44 in vistas_chaves:
+                            duplicates_removed += 1
                             continue
                         vistas_chaves.add(key_44)
 
@@ -224,6 +227,7 @@ class CollectorEngine:
                         if not meta:
                             continue
                         meta["path"] = Path(root) / fname
+                        meta["origem"] = src_path.name or str(src_path)
 
                         if key_aamm == self.target_aamm:
                             target_candidates.append(meta)
@@ -373,9 +377,28 @@ class CollectorEngine:
 
         txt_report_content = generate_txt_report(matched_notes, inut_records_found, final_audit, search_params)
 
+        primeiro_cnpj = sorted(self.cnpjs_set)[0] if self.cnpjs_set else "XMLs"
+        excel_file_path = None
+        if matched_notes or inut_records_found:
+            excel_name = f"Relatorio_Coleta_{primeiro_cnpj}_{self.target_year}_{self.target_month}.xlsx"
+            excel_file_path = dest_dir / excel_name
+            counter_xls = 1
+            while excel_file_path.exists():
+                excel_file_path = dest_dir / f"Relatorio_Coleta_{primeiro_cnpj}_{self.target_year}_{self.target_month}_{counter_xls}.xlsx"
+                counter_xls += 1
+            self._log("Gerando relatório Excel...")
+            generate_excel_report(
+                notes=matched_notes,
+                inut_records=inut_records_found,
+                audit_list=final_audit,
+                output_file=excel_file_path,
+                total_xml_read=scanned_count,
+                duplicates_removed=duplicates_removed,
+            )
+            self._log(f"Relatório Excel gerado em: {excel_file_path.name}")
+
         zip_file_path = None
         if self.generate_zip and (matched_notes or inut_records_found):
-            primeiro_cnpj = sorted(self.cnpjs_set)[0] if self.cnpjs_set else "XMLs"
             zip_name = f"XML_Fiscal_{primeiro_cnpj}_{self.target_year}_{self.target_month}.zip"
             zip_file_path = dest_dir / zip_name
 
@@ -386,8 +409,10 @@ class CollectorEngine:
 
             self._log(f"Gerando pacote ZIP com {len(matched_notes)} notas e {len(inut_records_found)} inutilizações...")
             with zipfile.ZipFile(zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-                # 1. Relatório em texto exclusivo dentro do ZIP
+                # 1. Relatórios dentro do ZIP
                 zipf.writestr("relatorio_coleta.txt", txt_report_content.encode("utf-8"))
+                if excel_file_path and excel_file_path.exists():
+                    zipf.write(excel_file_path, arcname="relatorio_coleta.xlsx")
 
                 # 2. XMLs de notas fiscais (todos diretamente na pasta Arquivos)
                 for note in matched_notes:
@@ -420,7 +445,8 @@ class CollectorEngine:
             "has_sequence_break": len(quebras_reais) > 0,
             "quebras_count": len(quebras_reais),
             "inut_count": len(inut_records_found),
-            "zip_path": str(zip_file_path) if zip_file_path else None
+            "zip_path": str(zip_file_path) if zip_file_path else None,
+            "excel_path": str(excel_file_path) if excel_file_path else None,
         }
 
         if self.on_finished:

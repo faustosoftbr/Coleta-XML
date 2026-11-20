@@ -17,6 +17,7 @@ def build():
         "--name=ColetorXMLFiscal",
         "--collect-all=customtkinter",
         "--hidden-import=xml.etree.ElementTree",
+        "--hidden-import=openpyxl",
         "--hidden-import=src",
         "main.py"
     ]

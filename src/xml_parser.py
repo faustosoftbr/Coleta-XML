@@ -23,23 +23,24 @@ def extract_key_from_filename(filename: str) -> Optional[str]:
         return match.group(1)
     return None
 
-def parse_iso_datetime(dt_str: Optional[str]) -> Tuple[Optional[date], str, str, str]:
+def parse_iso_datetime_parts(dt_str: Optional[str]) -> Tuple[Optional[date], str, str, str, str, str]:
     """
     Analisa string de data ISO (ex: 2026-10-31T23:30:03-04:00 ou 2026-10-31).
-    Retorna (date_obj, formatada_str 'dd/mm/aaaa hh:mm', ano_mes 'aaaa-mm', aamm 'aamm')
+    Retorna (date_obj, 'dd/mm/aaaa hh:mm', 'dd/mm/aaaa', 'HH:MM:SS', 'aaaa-mm', 'aamm')
     """
     if not dt_str:
-        return None, "", "", ""
+        return None, "", "", "", "", ""
     dt_str = dt_str.strip()
     try:
-        # Se contiver 'T', tenta fromisoformat
         if "T" in dt_str:
             dt = datetime.fromisoformat(dt_str)
             d_obj = dt.date()
             fmt = dt.strftime("%d/%m/%Y %H:%M")
+            d_only = dt.strftime("%d/%m/%Y")
+            t_only = dt.strftime("%H:%M:%S")
             ano_mes = dt.strftime("%Y-%m")
             aamm = f"{str(dt.year)[-2:]}{dt.month:02d}"
-            return d_obj, fmt, ano_mes, aamm
+            return d_obj, fmt, d_only, t_only, ano_mes, aamm
         elif len(dt_str) >= 10:
             partes = dt_str[:10].split("-")
             if len(partes) == 3:
@@ -48,10 +49,19 @@ def parse_iso_datetime(dt_str: Optional[str]) -> Tuple[Optional[date], str, str,
                 fmt = f"{dia:02d}/{mes:02d}/{ano:04d}"
                 ano_mes = f"{ano:04d}-{mes:02d}"
                 aamm = f"{str(ano)[-2:]}{mes:02d}"
-                return d_obj, fmt, ano_mes, aamm
+                return d_obj, fmt, fmt, "", ano_mes, aamm
     except Exception:
         pass
-    return None, "", "", ""
+    return None, "", "", "", "", ""
+
+
+def parse_iso_datetime(dt_str: Optional[str]) -> Tuple[Optional[date], str, str, str]:
+    """
+    Analisa string de data ISO (ex: 2026-10-31T23:30:03-04:00 ou 2026-10-31).
+    Retorna (date_obj, formatada_str 'dd/mm/aaaa hh:mm', ano_mes 'aaaa-mm', aamm 'aamm')
+    """
+    d_obj, fmt, _, _, ano_mes, aamm = parse_iso_datetime_parts(dt_str)
+    return d_obj, fmt, ano_mes, aamm
 
 def parse_key_metadata(key_44: str) -> Optional[Dict[str, Any]]:
     """
@@ -82,6 +92,7 @@ def parse_key_metadata(key_44: str) -> Optional[Dict[str, Any]]:
     mes = aamm[2:4]
     ano_mes = f"{ano}-{mes}"
 
+    tp_emis = key_44[34:35]
     return {
         "tipo": "NFE",
         "chave": key_44,
@@ -96,17 +107,77 @@ def parse_key_metadata(key_44: str) -> Optional[Dict[str, Any]]:
         "serie": serie,
         "numero": numero,
         "valor_total": 0.0,
+        "valor_produtos": 0.0,
+        "valor_icms": 0.0,
+        "base_icms": 0.0,
+        "desconto": 0.0,
+        "icms_desonerado": 0.0,
+        "frete": 0.0,
         "data_emissao_str": f"01/{mes}/{ano}",
+        "data_emissao_only_str": f"01/{mes}/{ano}",
+        "hora_emissao_str": "",
         "data_autorizacao_str": "",
+        "data_autorizacao_only_str": "",
+        "hora_autorizacao_str": "",
         "data_emissao_obj": None,
         "data_autorizacao_obj": None,
-        "ano_mes_autorizacao": ano_mes
+        "ano_mes_autorizacao": ano_mes,
+        "protocolo": "",
+        "status": "AUTORIZADA" if tp_emis == "1" else "CONTINGENCIA",
+        "codigo_status": "",
+        "motivo": "",
+        "dest_doc": "",
+        "dest_nome": "",
+        "tipo_emissao": "NORMAL" if tp_emis == "1" else "CONTINGENCIA",
+        "ambiente": "",
+        "origem": "",
+        "observacoes": "",
     }
+
+
+def _find_child(element: Optional[ET.Element], local_tag: str) -> Optional[ET.Element]:
+    if element is None:
+        return None
+    target = local_tag.lower()
+    for child in element:
+        tag_name = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag_name.lower() == target:
+            return child
+    return None
+
+
+def _find_first(element: Optional[ET.Element], local_tag: str) -> Optional[ET.Element]:
+    if element is None:
+        return None
+    target = local_tag.lower()
+    for elem in element.iter():
+        tag_name = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+        if tag_name.lower() == target:
+            return elem
+    return None
+
+
+def _get_float(element: Optional[ET.Element], local_tag: str, default: float = 0.0) -> float:
+    child = _find_child(element, local_tag)
+    if child is not None and child.text:
+        try:
+            return float(child.text.strip().replace(",", "."))
+        except ValueError:
+            pass
+    return default
+
+
+def _get_text(element: Optional[ET.Element], local_tag: str, default: str = "") -> str:
+    child = _find_child(element, local_tag)
+    if child is not None and child.text:
+        return child.text.strip()
+    return default
+
 
 def quick_read_xml_details(file_path: Path, note_data: Dict[str, Any]) -> None:
     """
-    Lê rapidamente o valor total (<vNF>), nome do emitente (<xNome>),
-    data de emissão exata (<dhEmi>) e data de autorização na SEFAZ (<dhRecbto>).
+    Lê os detalhes fiscais completos do XML (<vNF>, <xNome>, <dhEmi>, <dhRecbto>,
+    protocolo, status, destinatário, totais, tipo de emissão e ambiente).
     """
     try:
         content = ""
@@ -121,7 +192,98 @@ def quick_read_xml_details(file_path: Path, note_data: Dict[str, Any]) -> None:
         if not content:
             return
 
-        # Valor Total vNF
+        parsed_ok = False
+        try:
+            root = ET.fromstring(content)
+            inf_nfe = _find_first(root, "infNFe")
+            ide = _find_child(inf_nfe, "ide")
+            emit = _find_child(inf_nfe, "emit")
+            dest = _find_child(inf_nfe, "dest")
+            total = _find_child(inf_nfe, "total")
+            icms_tot = _find_child(total, "ICMSTot")
+            inf_prot = _find_first(root, "infProt")
+
+            if emit is not None:
+                xnome = _get_text(emit, "xNome")
+                if xnome:
+                    note_data["emit_nome"] = xnome
+
+            if dest is not None:
+                note_data["dest_doc"] = _get_text(dest, "CNPJ") or _get_text(dest, "CPF")
+                note_data["dest_nome"] = _get_text(dest, "xNome")
+
+            if icms_tot is not None:
+                note_data["valor_total"] = _get_float(icms_tot, "vNF", note_data.get("valor_total", 0.0))
+                note_data["valor_produtos"] = _get_float(icms_tot, "vProd", 0.0)
+                note_data["valor_icms"] = _get_float(icms_tot, "vICMS", 0.0)
+                note_data["base_icms"] = _get_float(icms_tot, "vBC", 0.0)
+                note_data["desconto"] = _get_float(icms_tot, "vDesc", 0.0)
+                note_data["icms_desonerado"] = _get_float(icms_tot, "vICMSDeson", 0.0)
+                note_data["frete"] = _get_float(icms_tot, "vFrete", 0.0)
+
+            tp_emis = _get_text(ide, "tpEmis")
+            if tp_emis:
+                note_data["tipo_emissao"] = "NORMAL" if tp_emis == "1" else "CONTINGENCIA"
+
+            tp_amb = _get_text(ide, "tpAmb")
+            if tp_amb == "1":
+                note_data["ambiente"] = "Produção"
+            elif tp_amb == "2":
+                note_data["ambiente"] = "Homologação"
+
+            raw_emi = _get_text(ide, "dhEmi") or _get_text(ide, "dEmi")
+            if raw_emi:
+                d_obj, fmt_str, d_only, t_only, _, _ = parse_iso_datetime_parts(raw_emi)
+                if d_obj:
+                    note_data["data_emissao_obj"] = d_obj
+                    note_data["data_emissao_str"] = fmt_str
+                    note_data["data_emissao_only_str"] = d_only
+                    note_data["hora_emissao_str"] = t_only
+
+            raw_recbto = _get_text(inf_prot, "dhRecbto")
+            if not raw_recbto:
+                rec_elem = _find_first(root, "dhRecbto")
+                raw_recbto = rec_elem.text.strip() if rec_elem is not None and rec_elem.text else ""
+
+            if raw_recbto:
+                d_obj_aut, fmt_str_aut, d_only_aut, t_only_aut, ano_mes_aut, _ = parse_iso_datetime_parts(raw_recbto)
+                if d_obj_aut:
+                    note_data["data_autorizacao_obj"] = d_obj_aut
+                    note_data["data_autorizacao_str"] = fmt_str_aut
+                    note_data["data_autorizacao_only_str"] = d_only_aut
+                    note_data["hora_autorizacao_str"] = t_only_aut
+                    note_data["ano_mes_autorizacao"] = ano_mes_aut
+            else:
+                note_data["data_autorizacao_obj"] = note_data.get("data_emissao_obj")
+                note_data["data_autorizacao_str"] = note_data.get("data_emissao_str", "")
+                note_data["data_autorizacao_only_str"] = note_data.get("data_emissao_only_str", "")
+                note_data["hora_autorizacao_str"] = note_data.get("hora_emissao_str", "")
+                note_data["ano_mes_autorizacao"] = note_data.get("ano_mes")
+
+            n_prot = _get_text(inf_prot, "nProt")
+            c_stat = _get_text(inf_prot, "cStat")
+            x_motivo = _get_text(inf_prot, "xMotivo")
+            note_data["protocolo"] = n_prot
+            note_data["codigo_status"] = c_stat
+            note_data["motivo"] = x_motivo
+
+            if c_stat in ("101", "151", "155") or "cancelad" in x_motivo.lower():
+                note_data["status"] = "CANCELADA"
+            elif c_stat in ("100", "150") or n_prot:
+                note_data["status"] = "AUTORIZADA"
+            elif tp_emis and tp_emis != "1":
+                note_data["status"] = "CONTINGENCIA"
+            elif not n_prot and not c_stat:
+                note_data["status"] = "CONTINGENCIA" if note_data.get("tipo_emissao") == "CONTINGENCIA" else "AUTORIZADA"
+
+            parsed_ok = True
+        except Exception:
+            parsed_ok = False
+
+        if parsed_ok:
+            return
+
+        # Fallback por regex caso o XML esteja malformado
         vnf_match = VNF_REGEX.search(content)
         if vnf_match:
             try:
@@ -129,33 +291,35 @@ def quick_read_xml_details(file_path: Path, note_data: Dict[str, Any]) -> None:
             except ValueError:
                 pass
 
-        # Nome do Emitente
         xnome_match = XNOME_EMIT_REGEX.search(content)
         if xnome_match:
             note_data["emit_nome"] = xnome_match.group(1).strip()
 
-        # Data Exata de Emissão (<dhEmi> ou <dEmi>)
         dhemi_match = DHEMI_REGEX.search(content)
         if dhemi_match:
             raw_emi = dhemi_match.group(1).strip()
-            d_obj, fmt_str, ano_mes, aamm = parse_iso_datetime(raw_emi)
+            d_obj, fmt_str, d_only, t_only, _, _ = parse_iso_datetime_parts(raw_emi)
             if d_obj:
                 note_data["data_emissao_obj"] = d_obj
                 note_data["data_emissao_str"] = fmt_str
+                note_data["data_emissao_only_str"] = d_only
+                note_data["hora_emissao_str"] = t_only
 
-        # Data de Autorização na SEFAZ (<dhRecbto>)
         dhrecbto_match = DHRECBTO_REGEX.search(content)
         if dhrecbto_match:
             raw_recbto = dhrecbto_match.group(1).strip()
-            d_obj_aut, fmt_str_aut, ano_mes_aut, aamm_aut = parse_iso_datetime(raw_recbto)
+            d_obj_aut, fmt_str_aut, d_only_aut, t_only_aut, ano_mes_aut, _ = parse_iso_datetime_parts(raw_recbto)
             if d_obj_aut:
                 note_data["data_autorizacao_obj"] = d_obj_aut
                 note_data["data_autorizacao_str"] = fmt_str_aut
+                note_data["data_autorizacao_only_str"] = d_only_aut
+                note_data["hora_autorizacao_str"] = t_only_aut
                 note_data["ano_mes_autorizacao"] = ano_mes_aut
         else:
-            # Fallback se não houver dhRecbto: usa os dados da emissão
             note_data["data_autorizacao_obj"] = note_data.get("data_emissao_obj")
             note_data["data_autorizacao_str"] = note_data.get("data_emissao_str", "")
+            note_data["data_autorizacao_only_str"] = note_data.get("data_emissao_only_str", "")
+            note_data["hora_autorizacao_str"] = note_data.get("hora_emissao_str", "")
             note_data["ano_mes_autorizacao"] = note_data.get("ano_mes")
 
     except Exception:
@@ -288,14 +452,16 @@ def parse_regular_xml_fallback(file_path: Path) -> Optional[Dict[str, Any]]:
 
         # Datas
         d_str = dhemi_elem.text if (dhemi_elem is not None and dhemi_elem.text) else (demi_elem.text if (demi_elem is not None and demi_elem.text) else "")
-        d_obj, data_emissao_str, ano_mes, aamm = parse_iso_datetime(d_str)
+        d_obj, data_emissao_str, data_emi_only, hora_emi, ano_mes, aamm = parse_iso_datetime_parts(d_str)
 
         dhrecbto_elem = find_first(root, "dhRecbto")
         recbto_str = dhrecbto_elem.text.strip() if dhrecbto_elem is not None and dhrecbto_elem.text else ""
-        d_obj_aut, data_aut_str, ano_mes_aut, _ = parse_iso_datetime(recbto_str)
+        d_obj_aut, data_aut_str, data_aut_only, hora_aut, ano_mes_aut, _ = parse_iso_datetime_parts(recbto_str)
         if not d_obj_aut:
             d_obj_aut = d_obj
             data_aut_str = data_emissao_str
+            data_aut_only = data_emi_only
+            hora_aut = hora_emi
             ano_mes_aut = ano_mes
 
         # Valor
@@ -314,7 +480,7 @@ def parse_regular_xml_fallback(file_path: Path) -> Optional[Dict[str, Any]]:
         if inf_id.startswith("NFe"):
             chave = inf_id[3:]
 
-        return {
+        result = {
             "tipo": "NFE",
             "path": file_path,
             "chave": chave,
@@ -326,10 +492,16 @@ def parse_regular_xml_fallback(file_path: Path) -> Optional[Dict[str, Any]]:
             "emit_nome": emit_nome,
             "valor_total": valor_total,
             "data_emissao_str": data_emissao_str,
+            "data_emissao_only_str": data_emi_only,
+            "hora_emissao_str": hora_emi,
             "data_autorizacao_str": data_aut_str,
+            "data_autorizacao_only_str": data_aut_only,
+            "hora_autorizacao_str": hora_aut,
             "data_emissao_obj": d_obj,
             "data_autorizacao_obj": d_obj_aut,
-            "ano_mes_autorizacao": ano_mes_aut
+            "ano_mes_autorizacao": ano_mes_aut,
         }
+        quick_read_xml_details(file_path, result)
+        return result
     except Exception:
         return None
