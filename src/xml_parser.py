@@ -132,6 +132,7 @@ def parse_key_metadata(key_44: str) -> Optional[Dict[str, Any]]:
         "ambiente": "",
         "origem": "",
         "observacoes": "",
+        "is_cancellation": False,
     }
 
 
@@ -267,8 +268,29 @@ def quick_read_xml_details(file_path: Path, note_data: Dict[str, Any]) -> None:
             note_data["codigo_status"] = c_stat
             note_data["motivo"] = x_motivo
 
-            if c_stat in ("101", "151", "155") or "cancelad" in x_motivo.lower():
+            # Verifica se há evento de cancelamento vinculado (<retEvento> ou <procEventoNFe>)
+            is_cancel_event = False
+            inf_evento = _find_first(root, "infEvento")
+            if inf_evento is not None:
+                tp_evento = _get_text(inf_evento, "tpEvento")
+                x_evento = _get_text(inf_evento, "xEvento")
+                ev_cstat = _get_text(inf_evento, "cStat")
+                ev_motivo = _get_text(inf_evento, "xMotivo")
+                ev_nprot = _get_text(inf_evento, "nProt")
+                if tp_evento == "110111" or "cancel" in x_evento.lower():
+                    # Considera cancelado se evento registrado (135/136/155) ou sem cStat de rejeição
+                    if not ev_cstat or ev_cstat in ("135", "136", "155", "101", "151"):
+                        is_cancel_event = True
+                        if ev_nprot:
+                            note_data["protocolo"] = ev_nprot
+                        if ev_cstat:
+                            note_data["codigo_status"] = ev_cstat
+                        if ev_motivo:
+                            note_data["motivo"] = f"{x_evento}: {ev_motivo}" if x_evento else ev_motivo
+
+            if is_cancel_event or c_stat in ("101", "151", "155") or "cancelad" in x_motivo.lower():
                 note_data["status"] = "CANCELADA"
+                note_data["is_cancellation"] = True
             elif c_stat in ("100", "150") or n_prot:
                 note_data["status"] = "AUTORIZADA"
             elif tp_emis and tp_emis != "1":
@@ -379,6 +401,15 @@ def parse_inut_xml(file_path: Path) -> Optional[Dict[str, Any]]:
         if not cnpj or not mod or nnf_ini == 0:
             return None
 
+        dhrecbto_elem = find_first(root, "dhRecbto")
+        rec_str = dhrecbto_elem.text.strip() if dhrecbto_elem is not None and dhrecbto_elem.text else ""
+        _, _, d_aut_only, t_aut_only, ano_mes_inut, _ = parse_iso_datetime_parts(rec_str)
+        if not ano_mes_inut:
+            m_date = re.search(r"(20\d{2})[_-](\d{2})[_-](\d{2})", file_path.name)
+            if m_date:
+                ano_mes_inut = f"{m_date.group(1)}-{m_date.group(2)}"
+                d_aut_only = f"{m_date.group(3)}/{m_date.group(2)}/{m_date.group(1)}"
+
         return {
             "tipo": "INUT",
             "path": file_path,
@@ -389,8 +420,63 @@ def parse_inut_xml(file_path: Path) -> Optional[Dict[str, Any]]:
             "nnf_ini": nnf_ini,
             "nnf_fin": nnf_fin,
             "ano": ano,
+            "ano_mes": ano_mes_inut,
+            "data_autorizacao_only_str": d_aut_only,
+            "hora_autorizacao_str": t_aut_only,
             "justificativa": x_just,
-            "motivo": x_motivo
+            "motivo": x_motivo,
+            "origem": "",
+        }
+    except Exception:
+        return None
+
+
+def parse_cancel_event_xml(file_path: Path) -> Optional[Dict[str, Any]]:
+    """
+    Analisa arquivos avulsos de evento de cancelamento (procEventoNFe / retEvento)
+    que não possuem a tag <infNFe>, retornando chNFe, protocolo, código, motivo e data.
+    """
+    try:
+        content = None
+        for enc in ("utf-8", "latin-1", "cp1252"):
+            try:
+                with open(file_path, "r", encoding=enc) as f:
+                    content = f.read()
+                    break
+            except UnicodeDecodeError:
+                continue
+
+        if not content or "infNFe" in content or "110111" not in content:
+            return None
+
+        root = ET.fromstring(content)
+        inf_evento = _find_first(root, "infEvento")
+        if inf_evento is None:
+            return None
+
+        tp_evento = _get_text(inf_evento, "tpEvento")
+        x_evento = _get_text(inf_evento, "xEvento")
+        if tp_evento != "110111" and "cancel" not in x_evento.lower():
+            return None
+
+        ch_nfe = clean_digits(_get_text(inf_evento, "chNFe"))
+        if len(ch_nfe) != 44:
+            return None
+
+        c_stat = _get_text(inf_evento, "cStat")
+        if c_stat and c_stat not in ("135", "136", "155", "101", "151"):
+            return None
+
+        dh_reg = _get_text(inf_evento, "dhRegEvento")
+        _, _, d_aut_only, t_aut_only, _, _ = parse_iso_datetime_parts(dh_reg)
+        return {
+            "chave": ch_nfe,
+            "path": file_path,
+            "protocolo": _get_text(inf_evento, "nProt"),
+            "codigo_status": c_stat,
+            "motivo": f"{x_evento}: {_get_text(inf_evento, 'xMotivo')}".strip(": "),
+            "data_autorizacao_only_str": d_aut_only,
+            "hora_autorizacao_str": t_aut_only,
         }
     except Exception:
         return None

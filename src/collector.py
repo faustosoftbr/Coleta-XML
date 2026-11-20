@@ -12,6 +12,7 @@ from src.xml_parser import (
     parse_key_metadata,
     quick_read_xml_details,
     parse_inut_xml,
+    parse_cancel_event_xml,
     parse_regular_xml_fallback,
     clean_digits
 )
@@ -168,10 +169,11 @@ class CollectorEngine:
         target_candidates: List[Dict[str, Any]] = []
         next_boundary_candidates: List[Dict[str, Any]] = []
         prev_boundary_candidates: List[Dict[str, Any]] = []
-        non_key_files: List[Tuple[Path, str]] = []
+        non_key_files: List[Tuple[Path, str, str]] = []
         scanned_count = 0
         duplicates_removed = 0
         vistas_chaves: Set[str] = set()
+        duplicate_candidates_by_key: Dict[str, List[Tuple[Path, str]]] = {}
 
         # 1. Primeira Passagem: Varredura ultrarrápida por chave SEFAZ (Zero-IO)
         for src in self.source_paths:
@@ -199,8 +201,9 @@ class CollectorEngine:
                             self._report_progress(scanned_count, len(target_candidates), fname)
 
                         key_44 = extract_key_from_filename(fname)
+                        origem_nome = src_path.name or str(src_path)
                         if not key_44:
-                            non_key_files.append((Path(root), fname))
+                            non_key_files.append((Path(root), fname, origem_nome))
                             continue
 
                         # Filtro de Modelo
@@ -219,6 +222,7 @@ class CollectorEngine:
 
                         if key_44 in vistas_chaves:
                             duplicates_removed += 1
+                            duplicate_candidates_by_key.setdefault(key_44, []).append((Path(root) / fname, origem_nome))
                             continue
                         vistas_chaves.add(key_44)
 
@@ -227,7 +231,7 @@ class CollectorEngine:
                         if not meta:
                             continue
                         meta["path"] = Path(root) / fname
-                        meta["origem"] = src_path.name or str(src_path)
+                        meta["origem"] = origem_nome
 
                         if key_aamm == self.target_aamm:
                             target_candidates.append(meta)
@@ -255,6 +259,19 @@ class CollectorEngine:
         if all_candidates_to_read:
             def load_detail(note):
                 quick_read_xml_details(note["path"], note)
+                # Se houver duplicata para a mesma chave e o atual não for cancelamento,
+                # verifica se alguma cópia é cancelamento para substituir o XML autorizado.
+                if not note.get("is_cancellation") and note.get("chave") in duplicate_candidates_by_key:
+                    for dup_path, dup_origem in duplicate_candidates_by_key[note["chave"]]:
+                        probe = dict(note)
+                        probe["path"] = dup_path
+                        probe["origem"] = dup_origem
+                        probe["is_cancellation"] = False
+                        quick_read_xml_details(dup_path, probe)
+                        if probe.get("is_cancellation") or probe.get("status") == "CANCELADA":
+                            note.clear()
+                            note.update(probe)
+                            break
 
             with ThreadPoolExecutor(max_workers=16) as executor:
                 list(executor.map(load_detail, all_candidates_to_read))
@@ -305,49 +322,107 @@ class CollectorEngine:
         
         inut_records_found: List[Dict[str, Any]] = []
         vistos_inut_paths: Set[Path] = set()
+        matched_by_key = {n["chave"]: n for n in matched_notes if n.get("chave")}
 
-        # 5. Segunda Passagem Direcionada: Busca de Inutilizações se houver quebra
-        if quebras_iniciais and non_key_files:
-            self._log("Detectada quebra na sequência inicial. Buscando arquivos de inutilização/faltantes pelo número...")
-            
+        # 5. Segunda Passagem: Cancelamentos avulsos, Inutilizações (inclusive substituição de autorizadas) e faltantes
+        if non_key_files:
             faltantes_map = {}
-            for q in quebras_iniciais:
-                k = (q["cnpj"], q["modelo"], q["serie"])
-                faltantes_map[k] = set(q["numeros_faltantes"])
+            if quebras_iniciais:
+                self._log("Detectada quebra na sequência inicial. Buscando arquivos de inutilização/faltantes...")
+                for q in quebras_iniciais:
+                    k = (q["cnpj"], q["modelo"], q["serie"])
+                    faltantes_map[k] = set(q["numeros_faltantes"])
 
-            for root_dir, fname in non_key_files:
+            for root_dir, fname, origem_nome in non_key_files:
                 if self.is_cancelled():
                     break
                 full_path = root_dir / fname
 
-                for (cnpj, modelo, serie), numeros_set in faltantes_map.items():
-                    numero_achado = None
-                    for num in list(numeros_set):
-                        num_str = str(num)
-                        num_padded = f"{num:09d}"
-                        if num_str in fname or num_padded in fname:
-                            numero_achado = num
-                            break
+                # 5a. Evento de cancelamento avulso (sem chave no nome) que substitui nota autorizada
+                cancel_ev = parse_cancel_event_xml(full_path)
+                if cancel_ev and cancel_ev["chave"] in matched_by_key:
+                    target_note = matched_by_key[cancel_ev["chave"]]
+                    target_note["path"] = full_path
+                    target_note["origem"] = origem_nome
+                    target_note["status"] = "CANCELADA"
+                    target_note["is_cancellation"] = True
+                    if cancel_ev.get("protocolo"):
+                        target_note["protocolo"] = cancel_ev["protocolo"]
+                    if cancel_ev.get("codigo_status"):
+                        target_note["codigo_status"] = cancel_ev["codigo_status"]
+                    if cancel_ev.get("motivo"):
+                        target_note["motivo"] = cancel_ev["motivo"]
+                    self._log(f"✔ Cancelamento substituiu nota autorizada: {fname} (Nota {target_note['numero']})")
+                    continue
 
-                    if numero_achado is not None:
-                        inut_data = parse_inut_xml(full_path)
-                        if inut_data:
-                            if (not self.cnpjs_set or inut_data["emit_cnpj"] in self.cnpjs_set) and \
-                               inut_data["modelo"] == modelo and inut_data["serie"] == serie:
-                                if inut_data["nnf_ini"] <= numero_achado <= inut_data["nnf_fin"]:
-                                    if full_path not in vistos_inut_paths:
-                                        vistos_inut_paths.add(full_path)
-                                        inut_records_found.append(inut_data)
-                                        self._log(f"✔ Inutilização localizada: {fname} (Cobre nota {numero_achado})")
-                                        numeros_set.discard(numero_achado)
+                # 5b. Inutilizações: verifica se substitui nota autorizada, se cobre quebra ou se pertence ao mês alvo
+                inut_data = parse_inut_xml(full_path)
+                if inut_data:
+                    inut_data["origem"] = origem_nome
+                    mod_inut = inut_data["modelo"]
+                    if (mod_inut == "55" and not self.filter_nfe) or (mod_inut == "65" and not self.filter_nfce):
+                        continue
+                    if self.cnpjs_set and inut_data["emit_cnpj"] not in self.cnpjs_set:
+                        continue
+
+                    # Substitui qualquer nota autorizada/contingência no mesmo (CNPJ, modelo, série, faixa)
+                    replaced_nums = []
+                    remaining_notes = []
+                    for n in matched_notes:
+                        if (
+                            n.get("emit_cnpj") == inut_data["emit_cnpj"]
+                            and n.get("modelo") == mod_inut
+                            and str(n.get("serie")) == str(inut_data["serie"])
+                            and inut_data["nnf_ini"] <= int(n.get("numero", 0)) <= inut_data["nnf_fin"]
+                        ):
+                            replaced_nums.append(n["numero"])
+                            if n.get("chave") in matched_by_key:
+                                matched_by_key.pop(n["chave"], None)
                         else:
+                            remaining_notes.append(n)
+                    if replaced_nums:
+                        matched_notes = remaining_notes
+
+                    # Verifica se cobre alguma quebra de sequência
+                    covered_break = False
+                    k_inut = (inut_data["emit_cnpj"], mod_inut, inut_data["serie"])
+                    if k_inut in faltantes_map:
+                        nums_set = faltantes_map[k_inut]
+                        for num in list(nums_set):
+                            if inut_data["nnf_ini"] <= num <= inut_data["nnf_fin"]:
+                                covered_break = True
+                                nums_set.discard(num)
+
+                    same_month = inut_data.get("ano_mes") == self.target_ano_mes
+                    if replaced_nums or covered_break or same_month:
+                        if full_path not in vistos_inut_paths:
+                            vistos_inut_paths.add(full_path)
+                            inut_records_found.append(inut_data)
+                            if replaced_nums:
+                                self._log(f"✔ Inutilização substituiu nota autorizada: {fname} (Nota(s) {replaced_nums})")
+                            else:
+                                self._log(f"✔ Inutilização localizada: {fname} (Faixa {inut_data['nnf_ini']}..{inut_data['nnf_fin']})")
+                    continue
+
+                # 5c. Fallback para notas regulares sem chave no nome quando há quebra
+                if faltantes_map:
+                    for (cnpj, modelo, serie), numeros_set in faltantes_map.items():
+                        numero_achado = None
+                        for num in list(numeros_set):
+                            num_str = str(num)
+                            num_padded = f"{num:09d}"
+                            if num_str in fname or num_padded in fname:
+                                numero_achado = num
+                                break
+
+                        if numero_achado is not None:
                             regular_data = parse_regular_xml_fallback(full_path)
                             if regular_data and regular_data["numero"] == numero_achado:
                                 if (not self.cnpjs_set or regular_data["emit_cnpj"] in self.cnpjs_set) and \
                                    regular_data["modelo"] == modelo and regular_data["serie"] == serie:
-                                    # Verifica autorização
                                     aut_mes = regular_data.get("ano_mes_autorizacao", "")
                                     if aut_mes == self.target_ano_mes or not aut_mes:
+                                        regular_data["origem"] = origem_nome
                                         matched_notes.append(regular_data)
                                         self._log(f"✔ Nota com nome alternativo localizada: {fname} (Nota {numero_achado})")
                                         numeros_set.discard(numero_achado)
