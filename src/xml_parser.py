@@ -1,8 +1,22 @@
+import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
+
+
+def to_long_path(file_path: Path) -> str:
+    """No Windows, aplica prefixo \\\\?\\ para suportar caminhos acima de 260 caracteres."""
+    path_str = str(file_path)
+    if os.name != "nt":
+        return path_str
+    abs_path = os.path.abspath(path_str)
+    if abs_path.startswith("\\\\?\\"):
+        return abs_path
+    if abs_path.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + abs_path[2:]
+    return "\\\\?\\" + abs_path
 
 KEY_REGEX = re.compile(r"(\d{44})")
 VNF_REGEX = re.compile(r"<vNF>([^<]+)</vNF>")
@@ -182,9 +196,10 @@ def quick_read_xml_details(file_path: Path, note_data: Dict[str, Any]) -> None:
     """
     try:
         content = ""
+        safe_path = to_long_path(file_path)
         for enc in ("utf-8", "latin-1", "cp1252"):
             try:
-                with open(file_path, "r", encoding=enc) as f:
+                with open(safe_path, "r", encoding=enc) as f:
                     content = f.read()
                     break
             except UnicodeDecodeError:
@@ -354,9 +369,10 @@ def parse_inut_xml(file_path: Path) -> Optional[Dict[str, Any]]:
     """
     try:
         content = None
+        safe_path = to_long_path(file_path)
         for enc in ("utf-8", "latin-1", "cp1252"):
             try:
-                with open(file_path, "r", encoding=enc) as f:
+                with open(safe_path, "r", encoding=enc) as f:
                     content = f.read()
                     break
             except UnicodeDecodeError:
@@ -438,9 +454,10 @@ def parse_cancel_event_xml(file_path: Path) -> Optional[Dict[str, Any]]:
     """
     try:
         content = None
+        safe_path = to_long_path(file_path)
         for enc in ("utf-8", "latin-1", "cp1252"):
             try:
-                with open(file_path, "r", encoding=enc) as f:
+                with open(safe_path, "r", encoding=enc) as f:
                     content = f.read()
                     break
             except UnicodeDecodeError:
@@ -487,9 +504,10 @@ def parse_regular_xml_fallback(file_path: Path) -> Optional[Dict[str, Any]]:
     """
     try:
         content = None
+        safe_path = to_long_path(file_path)
         for enc in ("utf-8", "latin-1", "cp1252"):
             try:
-                with open(file_path, "r", encoding=enc) as f:
+                with open(safe_path, "r", encoding=enc) as f:
                     content = f.read()
                     break
             except UnicodeDecodeError:

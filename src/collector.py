@@ -14,7 +14,8 @@ from src.xml_parser import (
     parse_inut_xml,
     parse_cancel_event_xml,
     parse_regular_xml_fallback,
-    clean_digits
+    clean_digits,
+    to_long_path,
 )
 from src.sequence import analyze_sequences
 from src.exporter import generate_txt_report
@@ -184,9 +185,10 @@ class CollectorEngine:
                 continue
 
             src_path = Path(src)
+            walk_root = to_long_path(src_path) if os.name == "nt" else src_path
             self._log(f"Varrendo diretório: {src}")
             try:
-                for root, _, files in os.walk(src_path):
+                for root, _, files in os.walk(walk_root):
                     if self.is_cancelled():
                         break
                     for fname in files:
@@ -495,7 +497,10 @@ class CollectorEngine:
                         break
                     src_file = note["path"]
                     inner_path = f"Arquivos/{src_file.name}"
-                    zipf.write(src_file, arcname=inner_path)
+                    try:
+                        zipf.write(to_long_path(src_file), arcname=inner_path)
+                    except OSError as exc:
+                        self._log(f"Aviso: não foi possível adicionar ao ZIP ({src_file.name}): {exc}")
 
                 # 3. XMLs de Inutilizações (também na pasta Arquivos)
                 for inut in inut_records_found:
@@ -503,7 +508,10 @@ class CollectorEngine:
                         break
                     src_file = inut["path"]
                     inner_path = f"Arquivos/{src_file.name}"
-                    zipf.write(src_file, arcname=inner_path)
+                    try:
+                        zipf.write(to_long_path(src_file), arcname=inner_path)
+                    except OSError as exc:
+                        self._log(f"Aviso: não foi possível adicionar inutilização ao ZIP ({src_file.name}): {exc}")
 
             self._log("Pacote ZIP gerado com sucesso!")
 
